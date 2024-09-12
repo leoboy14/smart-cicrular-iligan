@@ -1,111 +1,104 @@
 import streamlit as st
-from streamlit_folium import folium_static
 import folium
-from folium import plugins
+from streamlit_folium import folium_static
 import kml2geojson
 import os
 from shapely.geometry import shape, mapping
-import random
+import pandas as pd
+import branca.colormap as cm
 
-# Set page config to wide mode
-st.set_page_config(layout="wide")
+# Set page config
+st.set_page_config(layout="wide", page_title="Iligan City Waste Map")
 
-# Force a refresh by adding a random parameter
-refresh_param = random.randint(1, 1000000)
+# Title
+st.title("Iligan City Waste Map")
 
-# Define a dark theme for the map using a custom TileLayer
-dark_theme = folium.TileLayer(
-    tiles='https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    name='Dark Theme',
-    control=False,
-    tms=False
-)
+# Load waste data
+@st.cache_data
+def load_waste_data():
+    return pd.read_csv("iligan_waste_data.csv")
+
+waste_data = load_waste_data()
+
+# Create color map
+min_waste = waste_data['waste_amount'].min()
+max_waste = waste_data['waste_amount'].max()
+colormap = cm.LinearColormap(colors=['green', 'yellow', 'red'], vmin=min_waste, vmax=max_waste)
 
 # Create a map centered on Iligan City
-m = folium.Map(location=[8.2280, 124.2452], zoom_start=12, control_scale=True)
+m = folium.Map(location=[8.2280, 124.2452], zoom_start=11)
 
-# Add the dark theme layer
-dark_theme.add_to(m)
-
-# Add markers with tooltips for notable locations
-locations = {
-    "Iligan City Hall": (8.2283, 124.2450, "The seat of the city government of Iligan."),
-    "Maria Cristina Falls": (8.1917, 124.1967, "Also known as the 'twin falls', it's the primary source of electric power for the city's industries."),
-    "Tinago Falls": (8.1661, 124.2067, "A hidden waterfall, its name 'Tinago' means 'hidden' in Filipino."),
-    "Mindanao State University - Iligan Institute of Technology": (8.2375, 124.2447, "A major state university in the Philippines, known for its engineering programs."),
-    "Iligan Bay": (8.2166, 124.2000, "The bay area of Iligan City, part of Iligan Bay."),
-    "Mandulog River": (8.2047, 124.2364, "One of the major rivers in Iligan City."),
-    "Lanao del Norte Provincial Capitol": (8.2280, 124.2444, "The seat of the provincial government of Lanao del Norte."),
-    "Anahaw Amphitheater": (8.2381, 124.2447, "An open-air amphitheater located within the MSU-IIT campus."),
-    "Iligan City National High School": (8.2308, 124.2447, "One of the largest public high schools in the city."),
-    "St. Michael's Cathedral": (8.2275, 124.2447, "The mother church of the Roman Catholic Diocese of Iligan.")
-}
-
-for name, info in locations.items():
-    lat, lon, description = info
-    folium.Marker(
-        [lat, lon],
-        popup=folium.Popup(description, max_width=300),
-        tooltip=name,
-        icon=folium.Icon(color='lightgray', icon='info-sign')
-    ).add_to(m)
-
-# Function to simplify geometry
-def simplify_geometry(geom, tolerance=0.0001):
-    if geom['type'] == 'Polygon':
-        return mapping(shape(geom).simplify(tolerance))
-    elif geom['type'] == 'MultiPolygon':
-        simple_polys = [shape(poly).simplify(tolerance) for poly in geom['coordinates']]
-        return mapping(shapely.geometry.MultiPolygon(simple_polys))
-    return geom
-
-# Convert KML to GeoJSON and simplify geometries
-kml_file = "admin-map-KML.kml"  # Make sure this file is in the same directory as your script
-if not os.path.exists(kml_file):
-    st.error(f"KML file '{kml_file}' not found. Please make sure it's in the same directory as this script.")
+# Convert KML to GeoJSON for barangay boundaries
+admin_kml_file = "admin-map-KML.kml"
+if not os.path.exists(admin_kml_file):
+    st.error(f"KML file '{admin_kml_file}' not found. Please make sure it's in the same directory as this script.")
 else:
     try:
-        # Convert KML to GeoJSON
-        geojson = kml2geojson.main.convert(kml_file)
+        admin_geojson = kml2geojson.main.convert(admin_kml_file)
         
-        # Simplify geometries
-        for feature in geojson[0]['features']:
+        # Simplify geometries (if needed)
+        def simplify_geometry(geom, tolerance=0.0001):
+            if geom['type'] == 'Polygon':
+                return mapping(shape(geom).simplify(tolerance))
+            elif geom['type'] == 'MultiPolygon':
+                simple_polys = [shape(poly).simplify(tolerance) for poly in geom['coordinates']]
+                return mapping(shapely.geometry.MultiPolygon(simple_polys))
+            return geom
+        
+        for feature in admin_geojson[0]['features']:
             if 'geometry' in feature and feature['geometry'] is not None:
                 feature['geometry'] = simplify_geometry(feature['geometry'])
         
-        # Add GeoJSON to the map with red border
-        style_function = lambda x: {
-            'fillColor': '#000000',
-            'color': '#FF0000',
-            'fillOpacity': 0.1,
-            'weight': 2
-        }
+        # Add GeoJSON to the map with color based on waste amount
+        def style_function(feature):
+            barangay_name = feature['properties'].get('name', '')
+            waste_amount = waste_data[waste_data['barangay'] == barangay_name]['waste_amount'].values
+            if len(waste_amount) > 0:
+                color = colormap(waste_amount[0])
+            else:
+                color = 'gray'  # Default color if no data available
+            return {
+                'fillColor': color,
+                'color': 'black',
+                'weight': 2,
+                'fillOpacity': 0.7,
+            }
 
         folium.GeoJson(
-            geojson[0],
-            name="KML Data",
-            style_function=style_function
+            admin_geojson[0],
+            name="Barangay Boundaries",
+            style_function=style_function,
+            tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Barangay:'])
         ).add_to(m)
 
-    except Exception as e:
-        st.error(f"An error occurred while processing the KML file: {str(e)}")
+        # Add color legend
+        colormap.add_to(m)
+        colormap.caption = 'Waste Amount'
 
-# Add layer control and fullscreen option
-folium.LayerControl().add_to(m)
-plugins.Fullscreen().add_to(m)
+        # Convert KML to GeoJSON for BMRF locations
+        bmrf_kml_file = "Iligan-BMRF.kml"
+        if not os.path.exists(bmrf_kml_file):
+            st.error(f"KML file '{bmrf_kml_file}' not found. Please make sure it's in the same directory as this script.")
+        else:
+            bmrf_geojson = kml2geojson.main.convert(bmrf_kml_file)
+            
+            # Add markers for each BMRF location
+            for feature in bmrf_geojson[0]['features']:
+                if feature['geometry']['type'] == 'Point':
+                    coordinates = feature['geometry']['coordinates']
+                    name = feature['properties'].get('name', 'Unknown')
+                    folium.Marker(
+                        [coordinates[1], coordinates[0]],
+                        popup=name,
+                        tooltip=name
+                    ).add_to(m)
+
+    except Exception as e:
+        st.error(f"An error occurred while processing the KML files: {str(e)}")
 
 # Display the map
-folium_static(m, width=1600, height=800)
+folium_static(m)
 
-# Add a title and description with light text for dark background
-st.markdown(f"""
-    <div style='position: absolute; top: 10px; left: 10px; z-index: 1000; background-color: rgba(0, 0, 0, 0.7); padding: 10px; border-radius: 5px;'>
-        <h1 style='color: white;'>Iligan City Interactive Map</h1>
-        <p style='color: #cccccc;'>Click on markers to learn about key locations in Iligan City. The KML data is displayed as an additional layer with red borders.</p>
-        <p style='color: #cccccc;'>Refresh: {refresh_param}</p>
-    </div>
-""", unsafe_allow_html=True)
-
-# Force a rerun to update the map
-st.experimental_rerun()
+# Display waste data table
+st.subheader("Waste Data by Barangay")
+st.dataframe(waste_data)
