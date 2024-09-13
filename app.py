@@ -12,7 +12,7 @@ st.title("Circular Iligan")
 # Load the data
 @st.cache_data
 def load_data():
-    data = pd.read_csv("clean.csv")
+    data = pd.read_csv("/Users/markryan/Desktop/smart_city/clean.csv")
     return data
 
 df = load_data()
